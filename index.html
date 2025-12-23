@@ -4903,6 +4903,76 @@
             cards.forEach(card => {
                 observer.observe(card);
             });
+
+            // Мобильный фикс: при прокрутке пальцем по карточкам иногда срабатывает click,
+            // из-за чего внезапно запускается тест и сетка «пропадает».
+            // Подавляем click, если был жест прокрутки (движение больше порога).
+            (function installTestCardsTapGuard() {
+                const MOVE_THRESHOLD = 10; // px
+                let activeCard = null;
+                let startX = 0;
+                let startY = 0;
+                let moved = false;
+
+                const getPoint = (ev) => {
+                    const t = ev.touches && ev.touches[0] ? ev.touches[0] : (ev.changedTouches && ev.changedTouches[0] ? ev.changedTouches[0] : ev);
+                    return { x: t.clientX || 0, y: t.clientY || 0 };
+                };
+
+                const onStart = (ev) => {
+                    const card = ev.target && ev.target.closest ? ev.target.closest('.test-card') : null;
+                    if (!card) return;
+                    activeCard = card;
+                    moved = false;
+                    const p = getPoint(ev);
+                    startX = p.x;
+                    startY = p.y;
+                };
+
+                const onMove = (ev) => {
+                    if (!activeCard) return;
+                    const p = getPoint(ev);
+                    const dx = Math.abs(p.x - startX);
+                    const dy = Math.abs(p.y - startY);
+                    if (dx + dy > MOVE_THRESHOLD) moved = true;
+                };
+
+                const onEnd = () => {
+                    if (!activeCard) return;
+                    if (moved) {
+                        activeCard.dataset.suppressClick = '1';
+                        setTimeout(() => {
+                            if (activeCard) delete activeCard.dataset.suppressClick;
+                        }, 0);
+                    }
+                    activeCard = null;
+                    moved = false;
+                };
+
+                // Capture click before inline onclick runs
+                document.addEventListener('click', (ev) => {
+                    const card = ev.target && ev.target.closest ? ev.target.closest('.test-card') : null;
+                    if (!card) return;
+                    if (card.dataset.suppressClick === '1') {
+                        ev.preventDefault();
+                        ev.stopPropagation();
+                        ev.stopImmediatePropagation();
+                        delete card.dataset.suppressClick;
+                    }
+                }, true);
+
+                if ('PointerEvent' in window) {
+                    document.addEventListener('pointerdown', onStart, { passive: true });
+                    document.addEventListener('pointermove', onMove, { passive: true });
+                    document.addEventListener('pointerup', onEnd, { passive: true });
+                    document.addEventListener('pointercancel', onEnd, { passive: true });
+                } else {
+                    document.addEventListener('touchstart', onStart, { passive: true });
+                    document.addEventListener('touchmove', onMove, { passive: true });
+                    document.addEventListener('touchend', onEnd, { passive: true });
+                    document.addEventListener('touchcancel', onEnd, { passive: true });
+                }
+            })();
             
             // Инициализация фактов
             initFactsCarousel();
