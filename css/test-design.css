@@ -36,6 +36,12 @@
     isolation: isolate;
 }
 
+/* Защита для мобильных: карточки тестов не должны становиться невидимыми при скролле */
+#tests-grid .test-card {
+    opacity: 1 !important;
+    transform: none !important;
+}
+
 .test-card::before {
     content: '';
     position: absolute;

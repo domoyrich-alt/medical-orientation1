@@ -29,7 +29,9 @@ function observeElements() {
         rootMargin: '0px 0px -50px 0px'
     });
 
-    const elements = document.querySelectorAll('.card, .test-card, .specialty-card, .achievement, .stat-card');
+    // Не трогаем .test-card: на мобильных из-за принудительного opacity=0
+    // карточки тестов могут «исчезать» при прокрутке.
+    const elements = document.querySelectorAll('.card, .specialty-card, .achievement, .stat-card');
     elements.forEach(element => {
         element.style.opacity = '0';
         element.style.transform = 'translateY(20px)';
