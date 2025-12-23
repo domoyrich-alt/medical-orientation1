@@ -666,11 +666,26 @@ section.visible {
     cursor: pointer;
     transition: all 0.3s;
     animation: fadeIn 0.5s;
+    touch-action: manipulation;
+    -webkit-tap-highlight-color: transparent;
 }
 
 .test-card:hover {
     transform: translateY(-5px);
     box-shadow: 0 20px 40px rgba(0,0,0,0.2);
+}
+
+@media (max-width: 768px) {
+    .test-cards {
+        grid-template-columns: 1fr;
+    }
+}
+
+@media (hover: none) {
+    .test-card:hover {
+        transform: none;
+        box-shadow: none;
+    }
 }
 
 .test-card h3 {
