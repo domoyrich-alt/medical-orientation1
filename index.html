@@ -188,6 +188,10 @@
                             <span class="stat-desc">Пользователей (на этом устройстве)</span>
                         </div>
                         <div class="platform-stat">
+                            <span class="stat-number" id="total-users-global-count">—</span>
+                            <span class="stat-desc">Пользователей (в целом)</span>
+                        </div>
+                        <div class="platform-stat">
                             <span class="stat-number" id="total-tests-count">0</span>
                             <span class="stat-desc">Тестов пройдено (на этом устройстве)</span>
                         </div>
@@ -1558,11 +1562,59 @@
 
         function updatePlatformStats() {
             const totalUsersEl = document.getElementById('total-users-count');
+            const totalUsersGlobalEl = document.getElementById('total-users-global-count');
             const totalTestsEl = document.getElementById('total-tests-count');
             const totalTypesEl = document.getElementById('total-test-types-count');
             const totalQuestionsEl = document.getElementById('total-questions-count');
 
-            if (!totalUsersEl && !totalTestsEl && !totalTypesEl && !totalQuestionsEl) return;
+            if (!totalUsersEl && !totalUsersGlobalEl && !totalTestsEl && !totalTypesEl && !totalQuestionsEl) return;
+
+            // Глобальный счётчик (все устройства) — требует Cloudflare Pages Functions + KV.
+            try {
+                if (totalUsersGlobalEl && !window.__globalUsersCountFetchInFlight) {
+                    const VISITOR_ID_KEY = 'mo_visitor_id_v1';
+                    let visitorId = '';
+                    try {
+                        visitorId = String(localStorage.getItem(VISITOR_ID_KEY) || '');
+                    } catch {
+                        visitorId = '';
+                    }
+
+                    if (!visitorId) {
+                        if (window.crypto && typeof window.crypto.randomUUID === 'function') {
+                            visitorId = window.crypto.randomUUID();
+                        } else {
+                            visitorId = 'v_' + Math.random().toString(16).slice(2) + Date.now().toString(16);
+                        }
+                        try {
+                            localStorage.setItem(VISITOR_ID_KEY, visitorId);
+                        } catch {
+                            // ignore
+                        }
+                    }
+
+                    totalUsersGlobalEl.textContent = '…';
+                    window.__globalUsersCountFetchInFlight = true;
+
+                    fetch(`/api/visitors?id=${encodeURIComponent(visitorId)}`, { cache: 'no-store' })
+                        .then(r => r.ok ? r.json() : null)
+                        .then((data) => {
+                            if (data && data.ok && typeof data.totalUsers === 'number') {
+                                totalUsersGlobalEl.textContent = data.totalUsers.toLocaleString('ru-RU');
+                            } else {
+                                totalUsersGlobalEl.textContent = '—';
+                            }
+                        })
+                        .catch(() => {
+                            totalUsersGlobalEl.textContent = '—';
+                        })
+                        .finally(() => {
+                            window.__globalUsersCountFetchInFlight = false;
+                        });
+                }
+            } catch {
+                if (totalUsersGlobalEl) totalUsersGlobalEl.textContent = '—';
+            }
 
             let users = [];
             try {
