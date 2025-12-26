@@ -1651,6 +1651,12 @@
             // Вопросов в базе — считаем уникальные по id, если доступна база
             let totalQuestions = 0;
             try {
+                // Предпочтительно: заранее рассчитанное распределение (не требует генерации банка)
+                if (window.__questionCountsByTestId && typeof window.__questionCountsByTestId === 'object') {
+                    totalQuestions = Object.values(window.__questionCountsByTestId)
+                        .filter(v => typeof v === 'number' && Number.isFinite(v))
+                        .reduce((sum, v) => sum + v, 0);
+                } else {
                 const db = (typeof questionDatabase !== 'undefined' && questionDatabase) ? questionDatabase : (window.fullTestQuestions || null);
                 if (db && typeof db === 'object') {
                     const ids = new Set();
@@ -1664,6 +1670,7 @@
                         }
                     });
                     totalQuestions = ids.size > 0 ? ids.size : raw;
+                }
                 }
             } catch {
                 totalQuestions = 0;
@@ -3454,7 +3461,7 @@
             };
         }
 
-        function generateProfessionGeneralQuestions(bandStartGrade) {
+        function generateProfessionGeneralQuestions(bandStartGrade, desiredCount = 64) {
             const band = normalizeBandLabel(bandStartGrade);
             const dims = {
                 people: 'Общение и помощь людям',
@@ -3534,14 +3541,20 @@
             const variants = [
                 (t) => t,
                 (t) => t.replace('Мне нравится', 'Мне интересно'),
+                (t) => t.replace('Мне нравится', 'Мне по душе'),
+                (t) => t.replace('Мне нравится', 'Мне приятно'),
+                (t) => t.replace('Мне интересно', 'Мне действительно интересно'),
                 (t) => t.replace('Мне важно', 'Для меня важно'),
-                (t) => t.replace('Мне подходит', 'Мне скорее подходит')
+                (t) => t.replace('Мне важно', 'Мне особенно важно'),
+                (t) => t.replace('Мне подходит', 'Мне скорее подходит'),
+                (t) => t.replace('Мне подходит', 'Мне обычно подходит')
             ];
 
             const questions = [];
             let idx = 0;
-            for (let pass = 0; pass < 6; pass++) {
-                const v = variants[pass % variants.length];
+            // Генерируем без повторов: каждая пара (variant,text) используется максимум 1 раз
+            outer: for (let pass = 0; pass < variants.length; pass++) {
+                const v = variants[pass];
                 for (const [dim, text] of base) {
                     idx++;
                     questions.push(
@@ -3552,6 +3565,7 @@
                             gradeBand: band
                         })
                     );
+                    if (questions.length >= desiredCount) break outer;
                 }
             }
 
@@ -3560,10 +3574,10 @@
                 questions[0].explanation = `Оценивайте утверждения по шкале. Мы сформируем профиль интересов: ${Object.values(dims).join(', ')}.`;
             }
 
-            return questions.slice(0, 60);
+            return questions;
         }
 
-        function generateMedicalProfessionQuestions(bandStartGrade) {
+        function generateMedicalProfessionQuestions(bandStartGrade, desiredCount = 64) {
             const band = normalizeBandLabel(bandStartGrade);
             const statements = {
                 empathy: 'Эмпатия и поддержка',
@@ -3642,13 +3656,15 @@
                 (t) => t,
                 (t) => t.replace('Мне интересно', 'Мне действительно интересно'),
                 (t) => t.replace('Мне важно', 'Для меня важно'),
-                (t) => t.replace('Мне подходит', 'Мне скорее подходит')
+                (t) => t.replace('Мне подходит', 'Мне скорее подходит'),
+                (t) => t.replace('Мне подходит', 'Мне обычно подходит'),
+                (t) => t.replace('Мне важно', 'Мне особенно важно')
             ];
 
             const questions = [];
             let idx = 0;
-            for (let pass = 0; pass < 6; pass++) {
-                const v = variants[pass % variants.length];
+            outer: for (let pass = 0; pass < variants.length; pass++) {
+                const v = variants[pass];
                 for (const [dim, text] of baseList) {
                     idx++;
                     questions.push(
@@ -3659,12 +3675,13 @@
                             gradeBand: band
                         })
                     );
+                    if (questions.length >= desiredCount) break outer;
                 }
             }
             if (questions.length > 0) {
                 questions[0].explanation = `Это мед.профориентация. Профиль строится по параметрам: ${Object.values(statements).join(', ')}.`;
             }
-            return questions.slice(0, 60);
+            return questions;
         }
 
         function makeMcq({ id, question, options, correct, explanation, topic, difficulty }) {
@@ -3680,401 +3697,696 @@
             };
         }
 
-        function generateBiologyByGrade(bandStartGrade) {
-            const band = normalizeBandLabel(bandStartGrade);
-            const prefix = `biology_${band}`;
-            const out = [];
+        // Детерминированные помощники (чтобы варианты всегда были стабильные)
+        function seededRand(seed) {
+            let s = (seed >>> 0) || 1;
+            return () => {
+                // LCG
+                s = (s * 1664525 + 1013904223) >>> 0;
+                return s / 4294967296;
+            };
+        }
 
-            const push = (q) => out.push(q);
-            let i = 0;
-
-            if (band === '1-4') {
-                const templates = [
-                    () => makeMcq({ id: stableId(prefix, ++i), topic: 'Природа', difficulty: 1,
-                        question: 'Что относится к живой природе?',
-                        options: ['Камень', 'Растение', 'Облако', 'Песок'],
-                        correct: 1,
-                        explanation: 'Растения — живые организмы: растут, питаются и размножаются.'
-                    }),
-                    () => makeMcq({ id: stableId(prefix, ++i), topic: 'Человек', difficulty: 1,
-                        question: 'Какой орган помогает нам дышать?',
-                        options: ['Лёгкие', 'Желудок', 'Печень', 'Почки'],
-                        correct: 0,
-                        explanation: 'Лёгкие обеспечивают газообмен: кислород поступает в кровь, а углекислый газ удаляется.'
-                    }),
-                    () => makeMcq({ id: stableId(prefix, ++i), topic: 'Гигиена', difficulty: 1,
-                        question: 'Когда нужно мыть руки?',
-                        options: ['Только утром', 'После улицы и перед едой', 'Только перед сном', 'Никогда'],
-                        correct: 1,
-                        explanation: 'Мытьё рук снижает риск инфекций.'
-                    }),
-                    () => makeMcq({ id: stableId(prefix, ++i), topic: 'Животные', difficulty: 1,
-                        question: 'Кто из этих животных — млекопитающее?',
-                        options: ['Лягушка', 'Голубь', 'Кошка', 'Щука'],
-                        correct: 2,
-                        explanation: 'Кошка — млекопитающее: детёныши питаются молоком.'
-                    })
-                ];
-                while (out.length < 55) {
-                    templates.forEach(t => { if (out.length < 55) push(t()); });
-                }
-                return out;
-            }
-
-            if (band === '5-6') {
-                const templates = [
-                    () => makeMcq({ id: stableId(prefix, ++i), topic: 'Клетка', difficulty: 1,
-                        question: 'Основная структурная единица живых организмов — это…',
-                        options: ['Клетка', 'Орган', 'Ткань', 'Система органов'],
-                        correct: 0,
-                        explanation: 'Клетка — минимальная живая система.'
-                    }),
-                    () => makeMcq({ id: stableId(prefix, ++i), topic: 'Ткани', difficulty: 2,
-                        question: 'Какая ткань проводит нервные импульсы?',
-                        options: ['Мышечная', 'Нервная', 'Эпителиальная', 'Соединительная'],
-                        correct: 1,
-                        explanation: 'Нервная ткань состоит из нейронов и обеспечивает проведение сигналов.'
-                    }),
-                    () => makeMcq({ id: stableId(prefix, ++i), topic: 'Питание', difficulty: 2,
-                        question: 'Где начинается переваривание крахмала?',
-                        options: ['В желудке', 'В ротовой полости', 'В толстой кишке', 'В печени'],
-                        correct: 1,
-                        explanation: 'Слюна содержит ферменты, начинающие расщепление крахмала.'
-                    }),
-                    () => makeMcq({ id: stableId(prefix, ++i), topic: 'Дыхание', difficulty: 2,
-                        question: 'Газ, необходимый для дыхания человека:',
-                        options: ['Азот', 'Кислород', 'Водород', 'Углекислый газ'],
-                        correct: 1,
-                        explanation: 'Кислород нужен клеткам для получения энергии.'
-                    })
-                ];
-                while (out.length < 60) {
-                    templates.forEach(t => { if (out.length < 60) push(t()); });
-                }
-                return out;
-            }
-
-            if (band === '7-8') {
-                const templates = [
-                    () => makeMcq({ id: stableId(prefix, ++i), topic: 'Кровь', difficulty: 2,
-                        question: 'Какие клетки крови переносят кислород?',
-                        options: ['Лейкоциты', 'Эритроциты', 'Тромбоциты', 'Нейроны'],
-                        correct: 1,
-                        explanation: 'Эритроциты содержат гемоглобин, который связывает кислород.'
-                    }),
-                    () => makeMcq({ id: stableId(prefix, ++i), topic: 'Нервная система', difficulty: 3,
-                        question: 'Основная структурная единица нервной системы — это…',
-                        options: ['Нейрон', 'Эритроцит', 'Альвеола', 'Плазма'],
-                        correct: 0,
-                        explanation: 'Нейрон принимает и передаёт нервные импульсы.'
-                    }),
-                    () => makeMcq({ id: stableId(prefix, ++i), topic: 'Дыхание', difficulty: 3,
-                        question: 'Где происходит газообмен в лёгких?',
-                        options: ['В бронхах', 'В альвеолах', 'В трахее', 'В гортани'],
-                        correct: 1,
-                        explanation: 'Альвеолы имеют тонкие стенки и густую сеть капилляров.'
-                    }),
-                    () => makeMcq({ id: stableId(prefix, ++i), topic: 'Пищеварение', difficulty: 3,
-                        question: 'Какой орган вырабатывает желчь?',
-                        options: ['Поджелудочная железа', 'Печень', 'Желудок', 'Селезёнка'],
-                        correct: 1,
-                        explanation: 'Желчь образуется в печени и помогает переваривать жиры.'
-                    }),
-                    () => makeMcq({ id: stableId(prefix, ++i), topic: 'Опора и движение', difficulty: 3,
-                        question: 'Как называется соединение костей, обеспечивающее подвижность?',
-                        options: ['Сустав', 'Шов', 'Сращение', 'Надкостница'],
-                        correct: 0,
-                        explanation: 'Суставы позволяют костям двигаться относительно друг друга.'
-                    })
-                ];
-                while (out.length < 70) {
-                    templates.forEach(t => { if (out.length < 70) push(t()); });
-                }
-                return out;
-            }
-
-            if (band === '9') {
-                const templates = [
-                    () => makeMcq({ id: stableId(prefix, ++i), topic: 'Генетика', difficulty: 3,
-                        question: 'Как называется совокупность всех генов организма?',
-                        options: ['Фенотип', 'Генотип', 'Кариотип', 'Экосистема'],
-                        correct: 1,
-                        explanation: 'Генотип — совокупность генов, а фенотип — проявившиеся признаки.'
-                    }),
-                    () => makeMcq({ id: stableId(prefix, ++i), topic: 'Эволюция', difficulty: 3,
-                        question: 'Главный эволюционный фактор в теории Дарвина:',
-                        options: ['Естественный отбор', 'Мутации', 'Дрейф генов', 'Изоляция'],
-                        correct: 0,
-                        explanation: 'Дарвин объяснял адаптации естественным отбором.'
-                    }),
-                    () => makeMcq({ id: stableId(prefix, ++i), topic: 'Экология', difficulty: 3,
-                        question: 'Организмы одного вида, живущие на одной территории, — это…',
-                        options: ['Биоценоз', 'Популяция', 'Экосистема', 'Биосфера'],
-                        correct: 1,
-                        explanation: 'Популяция — группа особей одного вида в определённой местности.'
-                    }),
-                    () => makeMcq({ id: stableId(prefix, ++i), topic: 'Клетка', difficulty: 4,
-                        question: 'Где в клетке происходит синтез белка?',
-                        options: ['В рибосомах', 'В лизосомах', 'В митохондриях', 'В вакуоли'],
-                        correct: 0,
-                        explanation: 'Рибосомы — место трансляции и сборки белка.'
-                    }),
-                    () => makeMcq({ id: stableId(prefix, ++i), topic: 'Физиология', difficulty: 4,
-                        question: 'Какую функцию выполняют лейкоциты?',
-                        options: ['Перенос кислорода', 'Защита организма', 'Свертывание крови', 'Проведение импульсов'],
-                        correct: 1,
-                        explanation: 'Лейкоциты участвуют в иммунной защите.'
-                    })
-                ];
-                while (out.length < 80) {
-                    templates.forEach(t => { if (out.length < 80) push(t()); });
-                }
-                return out;
-            }
-
-            // 10-11
-            const templates = [
-                () => makeMcq({ id: stableId(prefix, ++i), topic: 'Молекулярная биология', difficulty: 4,
-                    question: 'Носителем наследственной информации у большинства организмов является…',
-                    options: ['Белок', 'ДНК', 'Липиды', 'АТФ'],
-                    correct: 1,
-                    explanation: 'ДНК хранит информацию в последовательности нуклеотидов.'
-                }),
-                () => makeMcq({ id: stableId(prefix, ++i), topic: 'Генетика', difficulty: 4,
-                    question: 'Как называется процесс удвоения ДНК?',
-                    options: ['Трансляция', 'Репликация', 'Транскрипция', 'Денатурация'],
-                    correct: 1,
-                    explanation: 'Репликация — копирование молекулы ДНК перед делением клетки.'
-                }),
-                () => makeMcq({ id: stableId(prefix, ++i), topic: 'Обмен веществ', difficulty: 4,
-                    question: 'Какой органоид отвечает за клеточное дыхание?',
-                    options: ['Митохондрия', 'Рибосома', 'Аппарат Гольджи', 'Ядро'],
-                    correct: 0,
-                    explanation: 'Митохондрии синтезируют АТФ в процессе дыхания.'
-                }),
-                () => makeMcq({ id: stableId(prefix, ++i), topic: 'Экология', difficulty: 4,
-                    question: 'Цепь питания начинается с…',
-                    options: ['Редуцентов', 'Хищников', 'Продуцентов', 'Паразитов'],
-                    correct: 2,
-                    explanation: 'Продуценты (растения, водоросли) создают органическое вещество.'
-                }),
-                () => makeMcq({ id: stableId(prefix, ++i), topic: 'Биотехнологии', difficulty: 4,
-                    question: 'Какая молекула обычно используется как матрица при синтезе белка?',
-                    options: ['иРНК', 'ДНК', 'АТФ', 'Липиды мембраны'],
-                    correct: 0,
-                    explanation: 'Информационная РНК переносит код от ДНК к рибосомам.'
-                })
-            ];
-            while (out.length < 80) {
-                templates.forEach(t => { if (out.length < 80) push(t()); });
+        function shuffleWithSeed(arr, seed) {
+            const out = [...arr];
+            const rnd = seededRand(seed);
+            for (let i = out.length - 1; i > 0; i--) {
+                const j = Math.floor(rnd() * (i + 1));
+                [out[i], out[j]] = [out[j], out[i]];
             }
             return out;
         }
 
-        function generateChemistryByGrade(bandStartGrade) {
-            const band = normalizeBandLabel(bandStartGrade);
-            const prefix = `chemistry_${band}`;
+        function pickDistractors(values, correctValue, count, seed) {
+            const pool = values.filter(v => v !== correctValue);
+            const shuffled = shuffleWithSeed(pool, seed);
+            return shuffled.slice(0, count);
+        }
+
+        function difficultyByBand(band) {
+            if (band === '1-4') return 1;
+            if (band === '5-6') return 2;
+            if (band === '7-8') return 3;
+            if (band === '9') return 3;
+            return 4;
+        }
+
+        function buildMcqFromPairs({ prefix, pairs, questionText, optionsFromKeys, correctIndexFn, topic, difficulty, explanationFn, seedBase = 1 }) {
+            const keys = pairs.map(p => p.key);
+            const byKey = Object.fromEntries(pairs.map(p => [p.key, p.value]));
             const out = [];
             let i = 0;
-            const push = (q) => out.push(q);
 
-            if (band === '1-4') {
-                const templates = [
-                    () => makeMcq({ id: stableId(prefix, ++i), topic: 'Свойства веществ', difficulty: 1,
-                        question: 'Какое из веществ обычно бывает жидким при комнатной температуре?',
-                        options: ['Вода', 'Камень', 'Стекло', 'Железо'],
-                        correct: 0,
-                        explanation: 'Вода при комнатной температуре — жидкость.'
-                    }),
-                    () => makeMcq({ id: stableId(prefix, ++i), topic: 'Смеси', difficulty: 1,
-                        question: 'Что такое смесь?',
-                        options: ['Одно вещество', 'Два или больше веществ вместе', 'Только газ', 'Только металл'],
-                        correct: 1,
-                        explanation: 'Смесь состоит из нескольких веществ, которые можно разделить физически.'
-                    }),
-                    () => makeMcq({ id: stableId(prefix, ++i), topic: 'Вода', difficulty: 1,
-                        question: 'Что происходит с водой при замерзании?',
-                        options: ['Становится льдом', 'Исчезает', 'Становится дымом', 'Становится песком'],
-                        correct: 0,
-                        explanation: 'При низкой температуре вода превращается в лёд (твёрдое состояние).' 
-                    }),
-                    () => makeMcq({ id: stableId(prefix, ++i), topic: 'Безопасность', difficulty: 1,
-                        question: 'Что нужно делать при работе с бытовой химией?',
-                        options: ['Пробовать на вкус', 'Читать инструкцию', 'Смешивать всё подряд', 'Нюхать долго'],
-                        correct: 1,
-                        explanation: 'Инструкция и правила безопасности обязательны.'
+            pairs.forEach((p, idx) => {
+                const seed = seedBase + idx * 997;
+                const distract = pickDistractors(keys, p.key, 3, seed);
+                const optionKeys = shuffleWithSeed([p.key, ...distract], seed + 13);
+                const options = optionsFromKeys(optionKeys, byKey);
+                const correct = correctIndexFn(optionKeys, p.key);
+                out.push(
+                    makeMcq({
+                        id: stableId(prefix, ++i),
+                        topic,
+                        difficulty,
+                        question: typeof questionText === 'function' ? questionText(p, byKey) : String(questionText),
+                        options,
+                        correct,
+                        explanation: explanationFn ? explanationFn(p, byKey) : ''
                     })
-                ];
-                while (out.length < 55) {
-                    templates.forEach(t => { if (out.length < 55) push(t()); });
-                }
-                return out;
-            }
+                );
+            });
 
-            if (band === '5-6') {
-                const templates = [
-                    () => makeMcq({ id: stableId(prefix, ++i), topic: 'Атомы и молекулы', difficulty: 1,
-                        question: 'Молекула — это…',
-                        options: ['Самая маленькая частица вещества, сохраняющая его свойства', 'Любой металл', 'Только газ', 'Только жидкость'],
-                        correct: 0,
-                        explanation: 'Молекула — минимальная частица, сохраняющая химические свойства вещества.'
-                    }),
-                    () => makeMcq({ id: stableId(prefix, ++i), topic: 'Смеси', difficulty: 2,
-                        question: 'Как можно разделить смесь песка и воды?',
-                        options: ['Фильтрованием', 'Нагреванием до 1000°C', 'Магнитом', 'Никак'],
-                        correct: 0,
-                        explanation: 'Песок не растворяется — его можно отделить фильтром.'
-                    }),
-                    () => makeMcq({ id: stableId(prefix, ++i), topic: 'Растворы', difficulty: 2,
-                        question: 'Раствор — это…',
-                        options: ['Всегда вода', 'Однородная смесь', 'Только порошок', 'Только металл'],
-                        correct: 1,
-                        explanation: 'Раствор — однородная смесь растворителя и растворённого вещества.'
-                    }),
-                    () => makeMcq({ id: stableId(prefix, ++i), topic: 'Безопасность', difficulty: 2,
-                        question: 'Почему нельзя смешивать бытовую химию без указаний?',
-                        options: ['Может образоваться опасный газ', 'Потому что вода станет синей', 'Потому что это неинтересно', 'Потому что так нельзя только в школе'],
-                        correct: 0,
-                        explanation: 'Некоторые смеси выделяют токсичные вещества (например, хлорсодержащие пары).' 
-                    })
-                ];
-                while (out.length < 60) {
-                    templates.forEach(t => { if (out.length < 60) push(t()); });
-                }
-                return out;
-            }
-
-            if (band === '7-8') {
-                const templates = [
-                    () => makeMcq({ id: stableId(prefix, ++i), topic: 'Химические элементы', difficulty: 2,
-                        question: 'Какой символ у кислорода?',
-                        options: ['O', 'Ox', 'K', 'Ki'],
-                        correct: 0,
-                        explanation: 'Кислород обозначают символом O.'
-                    }),
-                    () => makeMcq({ id: stableId(prefix, ++i), topic: 'Формулы', difficulty: 2,
-                        question: 'Формула воды:',
-                        options: ['H2O', 'CO2', 'NaCl', 'O2'],
-                        correct: 0,
-                        explanation: 'Вода состоит из двух атомов водорода и одного атома кислорода.'
-                    }),
-                    () => makeMcq({ id: stableId(prefix, ++i), topic: 'Реакции', difficulty: 3,
-                        question: 'Что является признаком химической реакции?',
-                        options: ['Изменение цвета или выделение газа', 'Только перемешивание', 'Только охлаждение', 'Только измельчение'],
-                        correct: 0,
-                        explanation: 'При реакции часто образуется новое вещество: газ, осадок, изменение цвета/температуры.'
-                    }),
-                    () => makeMcq({ id: stableId(prefix, ++i), topic: 'Периодическая система', difficulty: 3,
-                        question: 'К какому классу относится натрий (Na)?',
-                        options: ['Щелочной металл', 'Галоген', 'Благородный газ', 'Неметалл'],
-                        correct: 0,
-                        explanation: 'Натрий — щелочной металл (1 группа).' 
-                    })
-                ];
-                while (out.length < 70) {
-                    templates.forEach(t => { if (out.length < 70) push(t()); });
-                }
-                return out;
-            }
-
-            if (band === '9') {
-                const templates = [
-                    () => makeMcq({ id: stableId(prefix, ++i), topic: 'Уравнивание', difficulty: 3,
-                        question: 'Сколько атомов кислорода в CO2?',
-                        options: ['1', '2', '3', '4'],
-                        correct: 1,
-                        explanation: 'Индекс 2 в формуле CO2 означает два атома кислорода.'
-                    }),
-                    () => makeMcq({ id: stableId(prefix, ++i), topic: 'Кислоты и основания', difficulty: 3,
-                        question: 'Раствор, имеющий pH меньше 7, — это…',
-                        options: ['Кислый', 'Щелочной', 'Нейтральный', 'Всегда соляной'],
-                        correct: 0,
-                        explanation: 'pH<7 соответствует кислой среде.'
-                    }),
-                    () => makeMcq({ id: stableId(prefix, ++i), topic: 'Соли', difficulty: 3,
-                        question: 'NaCl — это…',
-                        options: ['Кислота', 'Основание', 'Соль', 'Оксид'],
-                        correct: 2,
-                        explanation: 'NaCl — хлорид натрия, типичный представитель солей.'
-                    }),
-                    () => makeMcq({ id: stableId(prefix, ++i), topic: 'Окислительно-восстановительные', difficulty: 4,
-                        question: 'Окисление — это процесс…',
-                        options: ['Присоединения электронов', 'Отдачи электронов', 'Только соединения с кислородом', 'Только растворения'],
-                        correct: 1,
-                        explanation: 'В ОВР окисление — отдача электронов, восстановление — присоединение.'
-                    })
-                ];
-                while (out.length < 80) {
-                    templates.forEach(t => { if (out.length < 80) push(t()); });
-                }
-                return out;
-            }
-
-            // 10-11
-            const templates = [
-                () => makeMcq({ id: stableId(prefix, ++i), topic: 'Органическая химия', difficulty: 4,
-                    question: 'Как называется функциональная группа –OH?',
-                    options: ['Гидроксильная', 'Карбоксильная', 'Аминогруппа', 'Альдегидная'],
-                    correct: 0,
-                    explanation: '–OH — гидроксильная группа (спирты, фенолы).' 
-                }),
-                () => makeMcq({ id: stableId(prefix, ++i), topic: 'Растворы', difficulty: 4,
-                    question: 'Молярная концентрация измеряется в…',
-                    options: ['моль/л', 'л/моль', 'г/л', 'г'],
-                    correct: 0,
-                    explanation: 'Молярность — количество вещества (моль) на литр раствора.'
-                }),
-                () => makeMcq({ id: stableId(prefix, ++i), topic: 'Скорость реакции', difficulty: 4,
-                    question: 'Что обычно увеличивает скорость химической реакции?',
-                    options: ['Понижение температуры', 'Катализатор', 'Уменьшение поверхности', 'Уменьшение концентрации'],
-                    correct: 1,
-                    explanation: 'Катализатор снижает энергию активации и ускоряет реакцию.'
-                }),
-                () => makeMcq({ id: stableId(prefix, ++i), topic: 'Биохимия', difficulty: 4,
-                    question: 'Белки в организме состоят из…',
-                    options: ['Нуклеотидов', 'Аминокислот', 'Моносахаридов', 'Жирных кислот'],
-                    correct: 1,
-                    explanation: 'Мономеры белков — аминокислоты.'
-                })
-            ];
-            while (out.length < 80) {
-                templates.forEach(t => { if (out.length < 80) push(t()); });
-            }
             return out;
+        }
+
+        function generateBiologyByGrade(bandStartGrade, desiredCount = 64) {
+            const band = normalizeBandLabel(bandStartGrade);
+            const prefix = `biology_${band}`;
+            const diff = difficultyByBand(band);
+            const out = [];
+
+            // 1) Органы и их основные функции
+            const organToFunc = [
+                { key: 'Лёгкие', value: 'Дыхание (газообмен)' },
+                { key: 'Сердце', value: 'Перекачивание крови' },
+                { key: 'Желудок', value: 'Начальное переваривание пищи' },
+                { key: 'Печень', value: 'Образование желчи и обезвреживание вредных веществ' },
+                { key: 'Почки', value: 'Фильтрация крови и образование мочи' },
+                { key: 'Мозг', value: 'Управление работой организма' },
+                { key: 'Кожа', value: 'Защита тела и терморегуляция' },
+                { key: 'Кости', value: 'Опора и защита органов' },
+                { key: 'Мышцы', value: 'Движение тела' },
+                { key: 'Кровь', value: 'Транспорт веществ по организму' },
+                { key: 'Кишечник', value: 'Всасывание питательных веществ' },
+                { key: 'Глаза', value: 'Зрение' },
+                { key: 'Уши', value: 'Слух и равновесие' },
+                { key: 'Нос', value: 'Обоняние и согревание воздуха' },
+                { key: 'Язык', value: 'Вкус' }
+            ];
+
+            out.push(
+                ...buildMcqFromPairs({
+                    prefix: `${prefix}_organs`,
+                    pairs: organToFunc,
+                    topic: band === '1-4' ? 'Человек' : 'Анатомия',
+                    difficulty: diff,
+                    seedBase: 11,
+                    questionText: (p) => `Какая основная функция органа «${p.key}»?`,
+                    optionsFromKeys: (keys, byKey) => keys.map(k => byKey[k]),
+                    correctIndexFn: (keys, correctKey) => keys.indexOf(correctKey),
+                    explanationFn: (p) => `${p.key}: ${p.value}.`
+                })
+            );
+
+            // 2) Части растения и их роль
+            const plantPartToFunc = [
+                { key: 'Корень', value: 'Закрепляет растение и всасывает воду и минеральные вещества' },
+                { key: 'Стебель', value: 'Поддерживает и проводит вещества' },
+                { key: 'Лист', value: 'Фотосинтез и газообмен' },
+                { key: 'Цветок', value: 'Образование семян (размножение)' },
+                { key: 'Плод', value: 'Защищает семена и помогает распространению' },
+                { key: 'Семя', value: 'Дает начало новому растению' },
+                { key: 'Почка', value: 'Рост новых листьев/побегов' },
+                { key: 'Хлорофилл', value: 'Поглощает свет для фотосинтеза' },
+                { key: 'Пыльца', value: 'Участвует в оплодотворении' },
+                { key: 'Нектар', value: 'Привлекает опылителей' }
+            ];
+
+            out.push(
+                ...buildMcqFromPairs({
+                    prefix: `${prefix}_plants`,
+                    pairs: plantPartToFunc,
+                    topic: 'Растения',
+                    difficulty: diff,
+                    seedBase: 23,
+                    questionText: (p) => `Какова основная роль: «${p.key}»?`,
+                    optionsFromKeys: (keys, byKey) => keys.map(k => byKey[k]),
+                    correctIndexFn: (keys, correctKey) => keys.indexOf(correctKey),
+                    explanationFn: (p) => `${p.key}: ${p.value}.`
+                })
+            );
+
+            // 3) Биологические термины (для 5+)
+            if (band !== '1-4') {
+                const termToDef = [
+                    { key: 'Клетка', value: 'Минимальная живая система' },
+                    { key: 'Ткань', value: 'Совокупность клеток, сходных по строению и функциям' },
+                    { key: 'Орган', value: 'Часть тела, выполняющая определённую функцию' },
+                    { key: 'Система органов', value: 'Группа органов, работающих вместе' },
+                    { key: 'Митоз', value: 'Деление клетки с образованием двух одинаковых клеток' },
+                    { key: 'ДНК', value: 'Молекула, несущая наследственную информацию' },
+                    { key: 'Ген', value: 'Участок ДНК, определяющий признак' },
+                    { key: 'Фотосинтез', value: 'Образование органических веществ на свету из CO2 и воды' },
+                    { key: 'Дыхание', value: 'Получение энергии при окислении веществ (с участием кислорода)' },
+                    { key: 'Популяция', value: 'Особей одного вида на одной территории' },
+                    { key: 'Экосистема', value: 'Сообщество организмов и среда их обитания' },
+                    { key: 'Генотип', value: 'Совокупность генов организма' },
+                    { key: 'Фенотип', value: 'Совокупность проявившихся признаков организма' },
+                    { key: 'Естественный отбор', value: 'Выживание и размножение наиболее приспособленных' }
+                ];
+
+                out.push(
+                    ...buildMcqFromPairs({
+                        prefix: `${prefix}_terms`,
+                        pairs: termToDef,
+                        topic: band === '5-6' ? 'Основы биологии' : 'Биология',
+                        difficulty: diff,
+                        seedBase: 37,
+                        questionText: (p) => `Выберите верное определение термина: «${p.key}».`,
+                        optionsFromKeys: (keys, byKey) => keys.map(k => byKey[k]),
+                        correctIndexFn: (keys, correctKey) => keys.indexOf(correctKey),
+                        explanationFn: (p) => `Правильный ответ: ${p.value}.`
+                    })
+                );
+            }
+
+            // 4) Гигиена/здоровье (для младших и средних)
+            const ruleToWhy = [
+                { key: 'Мыть руки', value: 'Снижает риск инфекций' },
+                { key: 'Чистить зубы', value: 'Предотвращает кариес' },
+                { key: 'Пить воду', value: 'Помогает работе организма' },
+                { key: 'Спать достаточно', value: 'Нужен отдых для нервной системы' },
+                { key: 'Проветривать комнату', value: 'Воздух становится свежее, легче дышать' },
+                { key: 'Делать перерывы за компьютером', value: 'Снижает нагрузку на глаза и спину' },
+                { key: 'Есть овощи и фрукты', value: 'Источник витаминов и клетчатки' },
+                { key: 'Заниматься физкультурой', value: 'Укрепляет мышцы и сердце' },
+                { key: 'Соблюдать осанку', value: 'Снижает нагрузку на позвоночник' },
+                { key: 'Надевать шапку в холод', value: 'Помогает сохранять тепло' },
+                { key: 'Использовать солнцезащиту', value: 'Снижает риск ожога кожи' },
+                { key: 'Мыть овощи и фрукты', value: 'Снижает риск попадания микробов' }
+            ];
+
+            out.push(
+                ...buildMcqFromPairs({
+                    prefix: `${prefix}_health`,
+                    pairs: ruleToWhy,
+                    topic: 'Здоровье',
+                    difficulty: Math.max(1, diff - 1),
+                    seedBase: 59,
+                    questionText: (p) => `Зачем важно: «${p.key}»?`,
+                    optionsFromKeys: (keys, byKey) => keys.map(k => byKey[k]),
+                    correctIndexFn: (keys, correctKey) => keys.indexOf(correctKey),
+                    explanationFn: (p) => `${p.key}: ${p.value}.`
+                })
+            );
+
+            // 5) Органы чувств
+            const senseToOrgan = [
+                { key: 'Зрение', value: 'Глаза' },
+                { key: 'Слух', value: 'Уши' },
+                { key: 'Обоняние', value: 'Нос' },
+                { key: 'Вкус', value: 'Язык' },
+                { key: 'Осязание', value: 'Кожа' }
+            ];
+            out.push(
+                ...buildMcqFromPairs({
+                    prefix: `${prefix}_senses`,
+                    pairs: senseToOrgan,
+                    topic: 'Человек',
+                    difficulty: Math.max(1, diff - 1),
+                    seedBase: 71,
+                    questionText: (p) => `Какой орган отвечает за «${p.key}»?`,
+                    optionsFromKeys: (keys, byKey) => keys.map(k => byKey[k]),
+                    correctIndexFn: (keys, correctKey) => keys.indexOf(correctKey),
+                    explanationFn: (p) => `${p.key} обеспечивают: ${p.value}.`
+                })
+            );
+
+            // 6) Животные и группы (фиксированный набор вариантов, без дубликатов в опциях)
+            const animals = [
+                { name: 'Кошка', group: 'Млекопитающее' },
+                { name: 'Собака', group: 'Млекопитающее' },
+                { name: 'Дельфин', group: 'Млекопитающее' },
+                { name: 'Воробей', group: 'Птица' },
+                { name: 'Голубь', group: 'Птица' },
+                { name: 'Сова', group: 'Птица' },
+                { name: 'Щука', group: 'Рыба' },
+                { name: 'Карась', group: 'Рыба' },
+                { name: 'Акула', group: 'Рыба' },
+                { name: 'Лягушка', group: 'Земноводное' },
+                { name: 'Тритон', group: 'Земноводное' },
+                { name: 'Крокодил', group: 'Пресмыкающееся' },
+                { name: 'Черепаха', group: 'Пресмыкающееся' },
+                { name: 'Уж', group: 'Пресмыкающееся' },
+                { name: 'Пчела', group: 'Насекомое' },
+                { name: 'Бабочка', group: 'Насекомое' },
+                { name: 'Муравей', group: 'Насекомое' },
+                { name: 'Паук', group: 'Паукообразное' }
+            ];
+            const animalGroups = ['Млекопитающее', 'Птица', 'Рыба', 'Земноводное', 'Пресмыкающееся', 'Насекомое', 'Паукообразное'];
+            animals.forEach((a, idx) => {
+                const seed = 1001 + idx * 41 + bandStartGrade * 7;
+                const distract = pickDistractors(animalGroups, a.group, 3, seed);
+                const options = shuffleWithSeed([a.group, ...distract], seed + 3);
+                out.push(
+                    makeMcq({
+                        id: stableId(`${prefix}_animals`, idx + 1),
+                        topic: 'Животные',
+                        difficulty: Math.max(1, diff - (band === '1-4' ? 0 : 1)),
+                        question: `К какой группе относится «${a.name}»?`,
+                        options,
+                        correct: options.indexOf(a.group),
+                        explanation: `${a.name} относят к группе: ${a.group}.`
+                    })
+                );
+            });
+
+            // 7) Клеточные органоиды и функции (для 5+)
+            if (band !== '1-4') {
+                const organelleToFunc = [
+                    { key: 'Ядро', value: 'Хранение наследственной информации и управление клеткой' },
+                    { key: 'Рибосомы', value: 'Синтез белка' },
+                    { key: 'Митохондрии', value: 'Образование энергии (АТФ) при клеточном дыхании' },
+                    { key: 'Мембрана', value: 'Отделяет клетку и регулирует обмен веществ' },
+                    { key: 'Цитоплазма', value: 'Среда, где находятся органоиды' },
+                    { key: 'Аппарат Гольджи', value: 'Упаковка и транспорт веществ' },
+                    { key: 'ЭПС', value: 'Синтез и транспорт веществ внутри клетки' },
+                    { key: 'Лизосомы', value: 'Переваривание веществ (внутриклеточное)' },
+                    { key: 'Хлоропласты', value: 'Фотосинтез (у растений)' },
+                    { key: 'Вакуоль', value: 'Запас веществ и поддержание давления (у растений)' }
+                ];
+                out.push(
+                    ...buildMcqFromPairs({
+                        prefix: `${prefix}_cell`,
+                        pairs: organelleToFunc,
+                        topic: 'Клетка',
+                        difficulty: diff,
+                        seedBase: 83,
+                        questionText: (p) => `Какая функция у органоида: «${p.key}»?`,
+                        optionsFromKeys: (keys, byKey) => keys.map(k => byKey[k]),
+                        correctIndexFn: (keys, correctKey) => keys.indexOf(correctKey),
+                        explanationFn: (p) => `${p.key}: ${p.value}.`
+                    })
+                );
+            }
+
+            // 8) Сезоны и изменения в природе (хватает для добора в младших)
+            const seasonToChange = [
+                { key: 'Весна', value: 'Таяние снега и начало роста растений' },
+                { key: 'Лето', value: 'Самые тёплые дни и активный рост' },
+                { key: 'Осень', value: 'Листопад и подготовка к зиме' },
+                { key: 'Зима', value: 'Холод и снежный покров (часто)' },
+                { key: 'Весна', value: 'Возвращение перелётных птиц' },
+                { key: 'Осень', value: 'Отлёт перелётных птиц' }
+            ];
+            // Уникализируем по вопросу, поэтому дубликаты в key допустимы (текст разный)
+            seasonToChange.forEach((s, idx) => {
+                const seed = 2001 + idx * 17;
+                const seasons = ['Весна', 'Лето', 'Осень', 'Зима'];
+                const distract = pickDistractors(seasons, s.key, 3, seed);
+                const options = shuffleWithSeed([s.key, ...distract], seed + 1);
+                out.push(
+                    makeMcq({
+                        id: stableId(`${prefix}_seasons`, idx + 1),
+                        topic: 'Природа',
+                        difficulty: Math.max(1, diff - 1),
+                        question: `В какое время года обычно наблюдают: «${s.value}»?`,
+                        options,
+                        correct: options.indexOf(s.key),
+                        explanation: `Чаще всего это относится к: ${s.key}.`
+                    })
+                );
+            });
+
+            // Финал: делаем ровно desiredCount
+            const uniqByText = new Map();
+            out.forEach(q => {
+                const k = `${q.question}@@${q.topic}`;
+                if (!uniqByText.has(k)) uniqByText.set(k, q);
+            });
+            const unique = Array.from(uniqByText.values());
+            const rotated = shuffleWithSeed(unique, bandStartGrade * 101);
+            return rotated.slice(0, desiredCount);
+        }
+
+        function generateChemistryByGrade(bandStartGrade, desiredCount = 64) {
+            const band = normalizeBandLabel(bandStartGrade);
+            const prefix = `chemistry_${band}`;
+            const diff = difficultyByBand(band);
+            const out = [];
+
+            // 1) Состояния вещества
+            const stateExamples = [
+                { key: 'Твёрдое', value: 'Лёд' },
+                { key: 'Твёрдое', value: 'Камень' },
+                { key: 'Твёрдое', value: 'Железо' },
+                { key: 'Жидкость', value: 'Вода' },
+                { key: 'Жидкость', value: 'Молоко' },
+                { key: 'Жидкость', value: 'Масло' },
+                { key: 'Газ', value: 'Воздух' },
+                { key: 'Газ', value: 'Кислород' },
+                { key: 'Газ', value: 'Углекислый газ' }
+            ];
+
+            // Генерируем вопросы «что это за состояние?»
+            stateExamples.forEach((ex, idx) => {
+                const seed = (bandStartGrade * 1000) + idx * 31;
+                const states = ['Твёрдое', 'Жидкость', 'Газ'];
+                const distract = pickDistractors(states, ex.key, 3, seed);
+                const optionStates = shuffleWithSeed([ex.key, ...distract], seed + 9);
+                out.push(
+                    makeMcq({
+                        id: stableId(prefix, out.length + 1),
+                        topic: 'Состояния вещества',
+                        difficulty: Math.max(1, diff - 1),
+                        question: `Какое агрегатное состояние обычно имеет «${ex.value}» при комнатной температуре?`,
+                        options: optionStates,
+                        correct: optionStates.indexOf(ex.key),
+                        explanation: `Пример: «${ex.value}» относят к состоянию «${ex.key}» в обычных условиях.`
+                    })
+                );
+            });
+
+            // 2) Разделение смесей (безопасные школьные примеры)
+            const mixToMethod = [
+                { key: 'Песок + вода', value: 'Фильтрование' },
+                { key: 'Соль + вода', value: 'Выпаривание' },
+                { key: 'Сахар + вода', value: 'Выпаривание' },
+                { key: 'Камешки + песок', value: 'Просеивание' },
+                { key: 'Опилки + вода', value: 'Отстаивание' },
+                { key: 'Железные опилки + песок', value: 'Магнит' },
+                { key: 'Масло + вода', value: 'Отстаивание' },
+                { key: 'Чайные листья + вода', value: 'Фильтрование' },
+                { key: 'Рис + вода', value: 'Процеживание/фильтрование' },
+                { key: 'Глина + вода', value: 'Отстаивание' }
+            ];
+
+            // Вопросы «каким способом разделить?»
+            const methods = Array.from(new Set(mixToMethod.map(m => m.value)));
+            mixToMethod.forEach((m, idx) => {
+                const seed = 777 + idx * 97 + bandStartGrade * 3;
+                const distract = pickDistractors(methods, m.value, 3, seed);
+                const options = shuffleWithSeed([m.value, ...distract], seed + 5);
+                out.push(
+                    makeMcq({
+                        id: stableId(prefix, out.length + 1),
+                        topic: 'Смеси',
+                        difficulty: diff,
+                        question: `Как лучше разделить смесь: ${m.key}?`,
+                        options,
+                        correct: options.indexOf(m.value),
+                        explanation: `Подходит способ: ${m.value}.`
+                    })
+                );
+            });
+
+            // 3) Базовые термины (для 7+)
+            if (band !== '1-4') {
+                const termToDef = [
+                    { key: 'Атом', value: 'Наименьшая частица химического элемента' },
+                    { key: 'Молекула', value: 'Частица вещества, сохраняющая его химические свойства' },
+                    { key: 'Элемент', value: 'Вид атомов с одинаковым зарядом ядра' },
+                    { key: 'Соединение', value: 'Вещество из атомов разных элементов' },
+                    { key: 'Реакция', value: 'Процесс превращения одних веществ в другие' },
+                    { key: 'Катализатор', value: 'Вещество, ускоряющее реакцию и не расходующееся' },
+                    { key: 'Раствор', value: 'Однородная смесь растворителя и растворённого вещества' },
+                    { key: 'Индикатор', value: 'Вещество, меняющее цвет в зависимости от среды' },
+                    { key: 'Оксид', value: 'Соединение элемента с кислородом' },
+                    { key: 'pH', value: 'Мера кислотности/щелочности раствора' },
+                    { key: 'Окисление', value: 'Процесс отдачи электронов (в ОВР)' },
+                    { key: 'Восстановление', value: 'Процесс присоединения электронов (в ОВР)' }
+                ];
+                out.push(
+                    ...buildMcqFromPairs({
+                        prefix: `${prefix}_terms`,
+                        pairs: termToDef,
+                        topic: 'Основы химии',
+                        difficulty: diff,
+                        seedBase: 101,
+                        questionText: (p) => `Выберите верное определение термина: «${p.key}».`,
+                        optionsFromKeys: (keys, byKey) => keys.map(k => byKey[k]),
+                        correctIndexFn: (keys, correctKey) => keys.indexOf(correctKey),
+                        explanationFn: (p) => `Правильно: ${p.value}.`
+                    })
+                );
+            }
+
+            // 3b) Безопасность
+            const safetyRuleToWhy = [
+                { key: 'Читать инструкцию на упаковке', value: 'Чтобы правильно использовать средство и не навредить' },
+                { key: 'Работать в перчатках (если нужно)', value: 'Чтобы защитить кожу' },
+                { key: 'Не пробовать вещества на вкус', value: 'Это опасно и может привести к отравлению' },
+                { key: 'Не смешивать средства без указаний', value: 'Можно получить опасные пары или реакцию' },
+                { key: 'Проветривать помещение', value: 'Чтобы не вдыхать пары' },
+                { key: 'Держать бытовую химию вдали от детей', value: 'Чтобы избежать несчастных случаев' },
+                { key: 'Мыть руки после работы', value: 'Чтобы удалить остатки веществ' },
+                { key: 'Не нагревать неизвестные смеси', value: 'Нагрев может усилить реакцию и опасность' },
+                { key: 'Использовать очки в лаборатории', value: 'Чтобы защитить глаза' },
+                { key: 'Не нюхать вещества напрямую', value: 'Некоторые пары раздражают дыхательные пути' },
+                { key: 'Подписывать ёмкости', value: 'Чтобы не перепутать вещества' },
+                { key: 'Соблюдать порядок на столе', value: 'Чтобы снизить риск проливов и ошибок' }
+            ];
+            out.push(
+                ...buildMcqFromPairs({
+                    prefix: `${prefix}_safety`,
+                    pairs: safetyRuleToWhy,
+                    topic: 'Безопасность',
+                    difficulty: Math.max(1, diff - 1),
+                    seedBase: 303,
+                    questionText: (p) => `Зачем важно правило: «${p.key}»?`,
+                    optionsFromKeys: (keys, byKey) => keys.map(k => byKey[k]),
+                    correctIndexFn: (keys, correctKey) => keys.indexOf(correctKey),
+                    explanationFn: (p) => `${p.key}: ${p.value}.`
+                })
+            );
+
+            // 3c) Физические явления/изменения
+            const processToResult = [
+                { key: 'Плавление', value: 'Переход из твёрдого в жидкое' },
+                { key: 'Замерзание', value: 'Переход из жидкого в твёрдое' },
+                { key: 'Испарение', value: 'Переход из жидкого в газообразное' },
+                { key: 'Конденсация', value: 'Переход из газообразного в жидкое' },
+                { key: 'Кипение', value: 'Быстрое испарение по всему объёму жидкости' },
+                { key: 'Растворение', value: 'Равномерное распределение вещества в растворителе' },
+                { key: 'Кристаллизация', value: 'Образование кристаллов из раствора/расплава' },
+                { key: 'Сублимация', value: 'Переход из твёрдого сразу в газообразное' },
+                { key: 'Десублимация', value: 'Переход из газа сразу в твёрдое' },
+                { key: 'Диффузия', value: 'Самопроизвольное перемешивание частиц' }
+            ];
+            out.push(
+                ...buildMcqFromPairs({
+                    prefix: `${prefix}_processes`,
+                    pairs: processToResult,
+                    topic: 'Физические явления',
+                    difficulty: Math.max(1, diff - 1),
+                    seedBase: 505,
+                    questionText: (p) => `Что означает процесс: «${p.key}»?`,
+                    optionsFromKeys: (keys, byKey) => keys.map(k => byKey[k]),
+                    correctIndexFn: (keys, correctKey) => keys.indexOf(correctKey),
+                    explanationFn: (p) => `${p.key}: ${p.value}.`
+                })
+            );
+
+            // 3d) Добор простых вопросов для 1–4 классов
+            if (band === '1-4') {
+                const solubility = [
+                    { name: 'Соль', soluble: true },
+                    { name: 'Сахар', soluble: true },
+                    { name: 'Сода (пищевая)', soluble: true },
+                    { name: 'Песок', soluble: false },
+                    { name: 'Глина', soluble: false },
+                    { name: 'Мел', soluble: false },
+                    { name: 'Масло', soluble: false },
+                    { name: 'Мёд', soluble: true },
+                    { name: 'Какао-порошок', soluble: false },
+                    { name: 'Мука', soluble: false },
+                    { name: 'Лимонный сок', soluble: true },
+                    { name: 'Уксус', soluble: true },
+                    { name: 'Кофе растворимый', soluble: true },
+                    { name: 'Рис', soluble: false },
+                    { name: 'Опилки', soluble: false },
+                    { name: 'Сироп', soluble: true }
+                ];
+                solubility.forEach((x, idx) => {
+                    const options = ['Да', 'Нет', 'Зависит от температуры', 'Не знаю'];
+                    const correct = x.soluble ? 0 : 1;
+                    out.push(
+                        makeMcq({
+                            id: stableId(`${prefix}_solubility`, idx + 1),
+                            topic: 'Растворимость',
+                            difficulty: 1,
+                            question: `Растворится ли «${x.name}» в воде при перемешивании?`,
+                            options,
+                            correct,
+                            explanation: x.soluble ? 'Это вещество обычно растворяется в воде.' : 'Это вещество обычно не растворяется в воде.'
+                        })
+                    );
+                });
+
+                const materials = [
+                    { name: 'Железо', prop: 'Притягивается магнитом' },
+                    { name: 'Сталь', prop: 'Притягивается магнитом' },
+                    { name: 'Медь', prop: 'Проводит электричество' },
+                    { name: 'Алюминий', prop: 'Проводит электричество' },
+                    { name: 'Дерево', prop: 'Плохо проводит электричество' },
+                    { name: 'Пластик', prop: 'Плохо проводит электричество' },
+                    { name: 'Стекло', prop: 'Хрупкое (легко разбить)' },
+                    { name: 'Резина', prop: 'Эластичная (тянется)' },
+                    { name: 'Бумага', prop: 'Легко намокает' },
+                    { name: 'Камень', prop: 'Твёрдый материал' },
+                    { name: 'Лёд', prop: 'Таёт при нагревании' },
+                    { name: 'Вода', prop: 'Может испаряться при нагревании' }
+                ];
+                const props = ['Притягивается магнитом', 'Проводит электричество', 'Плохо проводит электричество', 'Хрупкое (легко разбить)', 'Эластичная (тянется)', 'Легко намокает', 'Твёрдый материал', 'Таёт при нагревании', 'Может испаряться при нагревании'];
+                materials.forEach((m, idx) => {
+                    const seed = 4004 + idx * 19;
+                    const distract = pickDistractors(props, m.prop, 3, seed);
+                    const options = shuffleWithSeed([m.prop, ...distract], seed + 4);
+                    out.push(
+                        makeMcq({
+                            id: stableId(`${prefix}_props`, idx + 1),
+                            topic: 'Свойства материалов',
+                            difficulty: 1,
+                            question: `Какое свойство подходит для материала «${m.name}»?`,
+                            options,
+                            correct: options.indexOf(m.prop),
+                            explanation: `Для материала «${m.name}» часто указывают: ${m.prop}.`
+                        })
+                    );
+                });
+            }
+
+            // 4) Символы элементов (для 7+)
+            if (band !== '1-4') {
+                const elementToSymbol = [
+                    { key: 'Кислород', value: 'O' },
+                    { key: 'Водород', value: 'H' },
+                    { key: 'Углерод', value: 'C' },
+                    { key: 'Азот', value: 'N' },
+                    { key: 'Натрий', value: 'Na' },
+                    { key: 'Калий', value: 'K' },
+                    { key: 'Кальций', value: 'Ca' },
+                    { key: 'Железо', value: 'Fe' },
+                    { key: 'Медь', value: 'Cu' },
+                    { key: 'Сера', value: 'S' },
+                    { key: 'Хлор', value: 'Cl' },
+                    { key: 'Магний', value: 'Mg' }
+                ];
+                const names = elementToSymbol.map(x => x.key);
+                elementToSymbol.forEach((el, idx) => {
+                    const seed = 909 + idx * 29 + bandStartGrade * 17;
+                    const distract = pickDistractors(names, el.key, 3, seed);
+                    const opts = shuffleWithSeed([el.key, ...distract], seed + 7);
+                    out.push(
+                        makeMcq({
+                            id: stableId(prefix, out.length + 1),
+                            topic: 'Периодическая система',
+                            difficulty: diff,
+                            question: `Какой элемент обозначается символом «${el.value}»?`,
+                            options: opts,
+                            correct: opts.indexOf(el.key),
+                            explanation: `Символ ${el.value} соответствует элементу: ${el.key}.`
+                        })
+                    );
+                });
+            }
+
+            // 5) Формулы распространённых веществ (для 7+)
+            if (band !== '1-4') {
+                const nameToFormula = [
+                    { key: 'Вода', value: 'H2O' },
+                    { key: 'Углекислый газ', value: 'CO2' },
+                    { key: 'Кислород', value: 'O2' },
+                    { key: 'Азот', value: 'N2' },
+                    { key: 'Поваренная соль', value: 'NaCl' },
+                    { key: 'Аммиак', value: 'NH3' },
+                    { key: 'Метан', value: 'CH4' },
+                    { key: 'Серная кислота', value: 'H2SO4' },
+                    { key: 'Соляная кислота', value: 'HCl' },
+                    { key: 'Гидроксид натрия', value: 'NaOH' },
+                    { key: 'Кальций карбонат (мел)', value: 'CaCO3' },
+                    { key: 'Глюкоза', value: 'C6H12O6' },
+                    { key: 'Оксид железа(III)', value: 'Fe2O3' },
+                    { key: 'Оксид кальция', value: 'CaO' },
+                    { key: 'Этанол', value: 'C2H5OH' }
+                ];
+                const formulas = nameToFormula.map(x => x.value);
+                nameToFormula.forEach((x, idx) => {
+                    const seed = 7007 + idx * 23 + bandStartGrade * 11;
+                    const distract = pickDistractors(formulas, x.value, 3, seed);
+                    const options = shuffleWithSeed([x.value, ...distract], seed + 2);
+                    out.push(
+                        makeMcq({
+                            id: stableId(`${prefix}_formulas`, idx + 1),
+                            topic: 'Формулы',
+                            difficulty: diff,
+                            question: `Какая формула у вещества: «${x.key}»?`,
+                            options,
+                            correct: options.indexOf(x.value),
+                            explanation: `«${x.key}» записывают как ${x.value}.`
+                        })
+                    );
+                });
+            }
+
+            // Финал: уникализируем и берём ровно desiredCount
+            const uniq = new Map();
+            out.forEach(q => {
+                const k = `${q.question}@@${q.topic}`;
+                if (!uniq.has(k)) uniq.set(k, q);
+            });
+            const unique = Array.from(uniq.values());
+            const rotated = shuffleWithSeed(unique, bandStartGrade * 313);
+            return rotated.slice(0, desiredCount);
         }
 
         // База данных вопросов по классам и сложности
         // Динамическая база данных вопросов - используем сгенерированные данные
         console.log('Initializing questionDatabase...');
+
+        // 20 карточек тестов (как в UI). Нужно всего 1290 вопросов: 10 карточек по 65 и 10 карточек по 64.
+        const TEST_CARD_IDS = [
+            'profession_general_1','profession_general_5','profession_general_7','profession_general_9','profession_general_10',
+            'profession_med_1','profession_med_5','profession_med_7','profession_med_9','profession_med_10',
+            'biology_1','biology_5','biology_7','biology_9','biology_10',
+            'chemistry_1','chemistry_5','chemistry_7','chemistry_9','chemistry_10'
+        ];
+
+        const TOTAL_QUESTIONS_TARGET = 1290;
+        const BASE_PER_CARD = Math.floor(TOTAL_QUESTIONS_TARGET / TEST_CARD_IDS.length); // 64
+        const REMAINDER = TOTAL_QUESTIONS_TARGET - (BASE_PER_CARD * TEST_CARD_IDS.length); // 10
+
+        // Meta для статистики и для ленивой генерации
+        const QUESTION_COUNTS_BY_TEST_ID = {};
+        TEST_CARD_IDS.forEach((id, idx) => {
+            QUESTION_COUNTS_BY_TEST_ID[id] = BASE_PER_CARD + (idx < REMAINDER ? 1 : 0);
+        });
+        // Экспортируем в window, чтобы главная могла показать количество даже при lazy-генерации
+        window.__questionCountsByTestId = QUESTION_COUNTS_BY_TEST_ID;
+
+        function desiredCountForTestId(testId) {
+            return QUESTION_COUNTS_BY_TEST_ID[testId] || BASE_PER_CARD;
+        }
+
         const questionDatabase = {
             // Профориентация общая
-            profession_general_1: generateProfessionGeneralQuestions(1),
-            profession_general_5: generateProfessionGeneralQuestions(5),
-            profession_general_7: generateProfessionGeneralQuestions(7),
-            profession_general_9: generateProfessionGeneralQuestions(9),
-            profession_general_10: generateProfessionGeneralQuestions(10),
+            profession_general_1: () => generateProfessionGeneralQuestions(1, desiredCountForTestId('profession_general_1')),
+            profession_general_5: () => generateProfessionGeneralQuestions(5, desiredCountForTestId('profession_general_5')),
+            profession_general_7: () => generateProfessionGeneralQuestions(7, desiredCountForTestId('profession_general_7')),
+            profession_general_9: () => generateProfessionGeneralQuestions(9, desiredCountForTestId('profession_general_9')),
+            profession_general_10: () => generateProfessionGeneralQuestions(10, desiredCountForTestId('profession_general_10')),
             // Медицинская профориентация
-            profession_med_1: generateMedicalProfessionQuestions(1),
-            profession_med_5: generateMedicalProfessionQuestions(5),
-            profession_med_7: generateMedicalProfessionQuestions(7),
-            profession_med_9: generateMedicalProfessionQuestions(9),
-            profession_med_10: generateMedicalProfessionQuestions(10),
+            profession_med_1: () => generateMedicalProfessionQuestions(1, desiredCountForTestId('profession_med_1')),
+            profession_med_5: () => generateMedicalProfessionQuestions(5, desiredCountForTestId('profession_med_5')),
+            profession_med_7: () => generateMedicalProfessionQuestions(7, desiredCountForTestId('profession_med_7')),
+            profession_med_9: () => generateMedicalProfessionQuestions(9, desiredCountForTestId('profession_med_9')),
+            profession_med_10: () => generateMedicalProfessionQuestions(10, desiredCountForTestId('profession_med_10')),
             // Биология
-            biology_1: generateBiologyByGrade(1),
-            biology_5: generateBiologyByGrade(5),
-            biology_7: generateBiologyByGrade(7),
-            biology_9: generateBiologyByGrade(9),
-            biology_10: generateBiologyByGrade(10),
+            biology_1: () => generateBiologyByGrade(1, desiredCountForTestId('biology_1')),
+            biology_5: () => generateBiologyByGrade(5, desiredCountForTestId('biology_5')),
+            biology_7: () => generateBiologyByGrade(7, desiredCountForTestId('biology_7')),
+            biology_9: () => generateBiologyByGrade(9, desiredCountForTestId('biology_9')),
+            biology_10: () => generateBiologyByGrade(10, desiredCountForTestId('biology_10')),
             // Химия
-            chemistry_1: generateChemistryByGrade(1),
-            chemistry_5: generateChemistryByGrade(5),
-            chemistry_7: generateChemistryByGrade(7),
-            chemistry_9: generateChemistryByGrade(9),
-            chemistry_10: generateChemistryByGrade(10),
+            chemistry_1: () => generateChemistryByGrade(1, desiredCountForTestId('chemistry_1')),
+            chemistry_5: () => generateChemistryByGrade(5, desiredCountForTestId('chemistry_5')),
+            chemistry_7: () => generateChemistryByGrade(7, desiredCountForTestId('chemistry_7')),
+            chemistry_9: () => generateChemistryByGrade(9, desiredCountForTestId('chemistry_9')),
+            chemistry_10: () => generateChemistryByGrade(10, desiredCountForTestId('chemistry_10')),
             // Старые названия для совместимости
-            biology: generateBiologyByGrade(9),
-            chemistry: generateChemistryByGrade(9),
-            profession: generateProfessionGeneralQuestions(9)
+            biology: () => generateBiologyByGrade(9, desiredCountForTestId('biology_9')),
+            chemistry: () => generateChemistryByGrade(9, desiredCountForTestId('chemistry_9')),
+            profession: () => generateProfessionGeneralQuestions(9, desiredCountForTestId('profession_general_9'))
         };
         console.log('QuestionDatabase initialized with', Object.keys(questionDatabase).length, 'test types');
 
@@ -4111,6 +4423,17 @@
                 const subject = questionDatabase[this.currentTest];
                 if (!subject) return [];
                 if (Array.isArray(subject)) return subject;
+
+                // Lazy generator: функция, возвращающая массив вопросов
+                if (typeof subject === 'function') {
+                    try {
+                        const generated = subject();
+                        return Array.isArray(generated) ? generated : [];
+                    } catch (e) {
+                        console.warn('Failed to generate questions for', this.currentTest, e);
+                        return [];
+                    }
+                }
 
                 const maxLevel = Math.min(this.maxDifficulty || 4, 4);
                 let questions = [];
