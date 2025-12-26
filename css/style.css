@@ -689,6 +689,15 @@ section.visible {
     }
 }
 
+/* Оптимизация для слабых ПК и доступность */
+@media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after {
+        animation: none !important;
+        transition: none !important;
+        scroll-behavior: auto !important;
+    }
+}
+
 .test-card h3 {
     margin-bottom: 10px;
     font-size: 1.3em;

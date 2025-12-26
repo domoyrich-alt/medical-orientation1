@@ -1597,13 +1597,27 @@
                     window.__globalUsersCountFetchInFlight = true;
 
                     fetch(`/api/visitors?id=${encodeURIComponent(visitorId)}`, { cache: 'no-store' })
-                        .then(r => r.ok ? r.json() : null)
-                        .then((data) => {
+                        .then(async (r) => {
+                            let data = null;
+                            try {
+                                data = await r.json();
+                            } catch {
+                                data = null;
+                            }
+                            return { ok: r.ok, status: r.status, data };
+                        })
+                        .then(({ ok, status, data }) => {
                             if (data && data.ok && typeof data.totalUsers === 'number') {
                                 totalUsersGlobalEl.textContent = data.totalUsers.toLocaleString('ru-RU');
-                            } else {
-                                totalUsersGlobalEl.textContent = '—';
+                                return;
                             }
+                            // Если KV не настроен в Cloudflare Pages — покажем понятную подсказку
+                            const err = data && typeof data.error === 'string' ? data.error : '';
+                            if (!ok && (status === 501 || /not configured/i.test(err))) {
+                                totalUsersGlobalEl.textContent = 'Нужно KV';
+                                return;
+                            }
+                            totalUsersGlobalEl.textContent = '—';
                         })
                         .catch(() => {
                             totalUsersGlobalEl.textContent = '—';
@@ -2358,10 +2372,32 @@
                 section.style.display = 'none';
                 section.classList.remove('visible');
             });
-            
-            // Скрыть контейнер тестов
-            document.getElementById('test-questions-container').classList.remove('active');
-            document.getElementById('test-results').classList.remove('show');
+
+            // Сбросить UI тестов (чтобы после завершения всё снова кликабельно работало)
+            try {
+                const legacyQuestions = document.getElementById('test-questions-container');
+                if (legacyQuestions) {
+                    legacyQuestions.classList.remove('active');
+                    legacyQuestions.style.display = 'none';
+                }
+                const legacyResults = document.getElementById('test-results');
+                if (legacyResults) {
+                    legacyResults.classList.remove('show');
+                    legacyResults.style.display = 'none';
+                }
+                document.querySelectorAll('#tests .test-container').forEach(c => {
+                    c.classList.remove('active');
+                    c.style.display = 'none';
+                });
+                document.querySelectorAll('#tests .result-container').forEach(c => {
+                    c.classList.remove('show');
+                    c.style.display = 'none';
+                });
+                const cards = document.querySelector('#tests .test-cards');
+                if (cards) cards.style.display = sectionId === 'tests' ? 'grid' : cards.style.display;
+            } catch (e) {
+                console.warn('showSection test UI reset failed', e);
+            }
             
             // Показать выбранную секцию
             const section = document.getElementById(sectionId);
@@ -2376,6 +2412,14 @@
                 setTimeout(() => {
                     section.classList.add('visible');
                 }, 50);
+            }
+
+            // Скролл к верху секции (и без лишней анимации при reduced-motion)
+            try {
+                const reduceMotion = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+                window.scrollTo({ top: 0, behavior: reduceMotion ? 'auto' : 'smooth' });
+            } catch {
+                window.scrollTo(0, 0);
             }
             
             // Обновить навигацию
@@ -2392,6 +2436,20 @@
                 activeLink.classList.add('active');
             }
         }
+
+        // Метки шкал профориентации (для красивого вывода результатов)
+        const ORIENTATION_DIM_LABELS = {
+            people: 'Общение и помощь людям',
+            analysis: 'Аналитика и системное мышление',
+            creativity: 'Творчество и идеи',
+            practice: 'Практика и «делать руками»',
+            empathy: 'Эмпатия',
+            responsibility: 'Ответственность',
+            stress: 'Стрессоустойчивость',
+            accuracy: 'Внимательность и аккуратность',
+            science: 'Интерес к науке',
+            teamwork: 'Командная работа'
+        };
 
         // Переключение карточек обучения
         function toggleLearningCard(element) {
@@ -4029,12 +4087,37 @@
                 this.answers = [];
                 this.currentDifficulty = 1;
                 this.questionsUsed = new Set();
+                this.questionKeysUsed = new Set();
                 this.skippedQuestions = [];
                 this.totalQuestions = 40;
                 this.maxDifficulty = 4;
                 this.startTime = null;
                 this.testResults = null;
                 this.currentQuestionData = null;
+            }
+
+            getQuestionUniqueKey(q, fallbackIndex = 0) {
+                if (!q) return `null_${fallbackIndex}`;
+                const kind = q.kind || 'mcq';
+                const topic = q.topic || '';
+                const dim = q.dimension || '';
+                const text = (q.question || '').trim();
+                // Если вдруг нет текста, используем id/индекс
+                const base = text || String(q.id || fallbackIndex);
+                return `${kind}|${topic}|${dim}|${base}`;
+            }
+
+            collectQuestionsForCurrentTest() {
+                const subject = questionDatabase[this.currentTest];
+                if (!subject) return [];
+                if (Array.isArray(subject)) return subject;
+
+                const maxLevel = Math.min(this.maxDifficulty || 4, 4);
+                let questions = [];
+                for (let level = 1; level <= maxLevel; level++) {
+                    questions = questions.concat(subject[level] || []);
+                }
+                return questions;
             }
 
             startTest(subject, userGrade = 5) {
@@ -4047,34 +4130,37 @@
                 this.maxDifficulty = this.getDifficultyForGrade(userGrade);
                 this.currentDifficulty = this.maxDifficulty;
                 this.questionsUsed.clear();
+                this.questionKeysUsed.clear();
                 this.skippedQuestions = [];
                 this.startTime = Date.now();
                 this.testResults = null;
                 this.updateSkippedInfo();
+
+                // Подстраиваем длину теста под реальный размер банка, чтобы не было повторов
+                try {
+                    const pool = this.collectQuestionsForCurrentTest();
+                    const uniq = new Set();
+                    pool.forEach((q, idx) => uniq.add(this.getQuestionUniqueKey(q, idx)));
+                    const available = uniq.size || pool.length || 0;
+                    this.totalQuestions = available > 0 ? Math.min(40, available) : 40;
+                } catch {
+                    this.totalQuestions = 40;
+                }
                 
                 console.log('Test initialized, calling showQuestion');
                 this.showQuestion();
             }
 
             getNextQuestion() {
-                const subject = questionDatabase[this.currentTest];
-                if (!subject) return null;
+                const questions = this.collectQuestionsForCurrentTest();
+                if (!questions || questions.length === 0) return null;
 
-                let questions = [];
-                if (Array.isArray(subject)) {
-                    questions = subject;
-                } else {
-                    // Если предмет организован по уровням сложности
-                    const maxLevel = Math.min(this.maxDifficulty || 4, 4);
-                    for (let level = 1; level <= maxLevel; level++) {
-                        questions = questions.concat(subject[level] || []);
-                    }
-                }
-
-                // Фильтруем уже использованные вопросы по уникальному id
-                const availableQuestions = questions.filter((q, index) => 
-                    !this.questionsUsed.has(q.id || index)
-                );
+                // Фильтруем уже использованные вопросы (по id и по ключу текста)
+                const availableQuestions = questions.filter((q, index) => {
+                    const idKey = q && q.id ? String(q.id) : String(index);
+                    const uniqKey = this.getQuestionUniqueKey(q, index);
+                    return !this.questionsUsed.has(idKey) && !this.questionKeysUsed.has(uniqKey);
+                });
 
                 if (availableQuestions.length === 0) {
                     return null;
@@ -4084,8 +4170,11 @@
                 const randomIndex = Math.floor(Math.random() * availableQuestions.length);
                 const question = availableQuestions[randomIndex];
                 const originalIndex = questions.indexOf(question);
-                
-                this.questionsUsed.add(question.id || originalIndex);
+
+                const idKey = question && question.id ? String(question.id) : String(originalIndex);
+                const uniqKey = this.getQuestionUniqueKey(question, originalIndex);
+                this.questionsUsed.add(idKey);
+                this.questionKeysUsed.add(uniqKey);
                 return question;
             }
 
@@ -4257,7 +4346,12 @@
                 }
 
                 // Возвращаем вопрос в поток: убираем из used, чтобы не терялся
-                if (q.id) this.questionsUsed.delete(q.id);
+                try {
+                    if (q.id) this.questionsUsed.delete(String(q.id));
+                    this.questionKeysUsed.delete(this.getQuestionUniqueKey(q, 0));
+                } catch {
+                    // ignore
+                }
                 this.currentQuestionData = q;
 
                 // Рендерим как "текущий" (номер = answers.length + 1)
@@ -4375,42 +4469,119 @@
                 if (analysisContainer) {
                     const levelInfo = this.getLevelInfo();
                     const weaknesses = this.getWeaknesses();
-                    
-                    analysisContainer.innerHTML = `
-                        <h3><i class="fas fa-chart-line"></i> Анализ вашего результата</h3>
-                        
-                        <div class="grade-estimate">
-                            📈 Ваш уровень подготовки: <strong>${levelInfo.level}</strong>
-                            <br><small style="opacity: 0.9; margin-top: 8px; display: block;">${levelInfo.description}</small>
-                        </div>
-                        
-                        <div class="strengths">
-                            <h4>Сильные стороны</h4>
-                            <div class="category-list">
-                                <ul>
-                                    ${this.getStrengths().map(strength => `<li>${strength}</li>`).join('')}
-                                </ul>
+
+                    if (this.testResults.isOrientation) {
+                        const prof = this.testResults.profile;
+                        const scores = (prof && Array.isArray(prof.scores)) ? prof.scores : [];
+                        const top = scores.slice(0, 3);
+
+                        const labelOf = (k) => (typeof ORIENTATION_DIM_LABELS === 'object' && ORIENTATION_DIM_LABELS && ORIENTATION_DIM_LABELS[k]) ? ORIENTATION_DIM_LABELS[k] : String(k);
+
+                        const suggestCareers = () => {
+                            const keys = top.map(t => t.key);
+                            const subject = String(this.testResults.subject || '');
+                            const list = [];
+
+                            const push = (v) => { if (v && !list.includes(v)) list.push(v); };
+                            const has = (k) => keys.includes(k);
+
+                            // Мед.трек — больше упор на мед.профессии
+                            if (subject.startsWith('profession_med_')) {
+                                if (has('empathy') || has('people')) { push('Медсестра / медбрат'); push('Педиатр'); }
+                                if (has('science') || has('analysis')) { push('Лаборант / лабораторная диагностика'); push('Фармацевт'); }
+                                if (has('accuracy')) { push('Стоматолог'); push('Медицинский лабораторный техник'); }
+                                if (has('stress')) { push('Скорая помощь (фельдшер)'); }
+                                if (has('teamwork')) { push('Врач в стационаре (командная работа)'); }
+                                if (has('responsibility')) { push('Врач общей практики'); }
+                                // универсальные
+                                push('Психолог (медицинский/клинический)');
+                                return list.slice(0, 7);
+                            }
+
+                            // Общая профориентация
+                            if (has('people')) { push('Психолог'); push('Преподаватель'); push('HR-специалист'); }
+                            if (has('analysis')) { push('Аналитик'); push('Программист'); push('Инженер'); }
+                            if (has('creativity')) { push('Дизайнер'); push('Маркетолог'); push('Контент-менеджер'); }
+                            if (has('practice')) { push('Техник'); push('Мастер/специалист по оборудованию'); }
+                            if (has('science')) { push('Исследователь'); push('Лаборант'); }
+                            if (has('teamwork')) { push('Менеджер проектов'); push('Организатор мероприятий'); }
+
+                            return list.slice(0, 7);
+                        };
+
+                        const careers = suggestCareers();
+
+                        analysisContainer.innerHTML = `
+                            <h3><i class="fas fa-compass"></i> Ваш профориентационный профиль</h3>
+                            <div class="grade-estimate">
+                                🧭 Итог: <strong>${levelInfo.level}</strong>
+                                <br><small style="opacity: 0.9; margin-top: 8px; display: block;">${levelInfo.description}</small>
                             </div>
-                        </div>
-                        
-                        <div class="weaknesses">
-                            <h4>Области для улучшения</h4>
-                            <div class="category-list">
-                                <ul>
-                                    ${weaknesses.map(weakness => `<li>${weakness}</li>`).join('')}
-                                </ul>
+
+                            <div class="strengths">
+                                <h4>Что вам подходит сильнее всего</h4>
+                                <div class="category-list">
+                                    <ul>
+                                        ${(top.length ? top : scores.slice(0, 3)).map(s => `<li>${labelOf(s.key)} — ${s.score}%</li>`).join('')}
+                                    </ul>
+                                </div>
                             </div>
-                        </div>
-                        
-                        <div class="recommendations">
-                            <h4>Рекомендации</h4>
-                            <div class="category-list">
-                                <ul>
-                                    ${this.getRecommendations().map(rec => `<li>${rec}</li>`).join('')}
-                                </ul>
+
+                            <div class="recommendations">
+                                <h4>Кем можно быть (примеры)</h4>
+                                <div class="category-list">
+                                    <ul>
+                                        ${(careers.length ? careers : ['Рекомендаций пока мало — ответьте на больше вопросов или пройдите тест ещё раз.']).map(c => `<li>${c}</li>`).join('')}
+                                    </ul>
+                                </div>
                             </div>
-                        </div>
-                    `;
+
+                            <div class="recommendations">
+                                <h4>Что попробовать дальше</h4>
+                                <div class="category-list">
+                                    <ul>
+                                        ${this.getRecommendations().map(rec => `<li>${rec}</li>`).join('')}
+                                    </ul>
+                                </div>
+                            </div>
+                        `;
+                    } else {
+                        analysisContainer.innerHTML = `
+                            <h3><i class="fas fa-chart-line"></i> Анализ вашего результата</h3>
+                            
+                            <div class="grade-estimate">
+                                📈 Ваш уровень подготовки: <strong>${levelInfo.level}</strong>
+                                <br><small style="opacity: 0.9; margin-top: 8px; display: block;">${levelInfo.description}</small>
+                            </div>
+                            
+                            <div class="strengths">
+                                <h4>Сильные стороны</h4>
+                                <div class="category-list">
+                                    <ul>
+                                        ${this.getStrengths().map(strength => `<li>${strength}</li>`).join('')}
+                                    </ul>
+                                </div>
+                            </div>
+                            
+                            <div class="weaknesses">
+                                <h4>Области для улучшения</h4>
+                                <div class="category-list">
+                                    <ul>
+                                        ${weaknesses.map(weakness => `<li>${weakness}</li>`).join('')}
+                                    </ul>
+                                </div>
+                            </div>
+                            
+                            <div class="recommendations">
+                                <h4>Рекомендации</h4>
+                                <div class="category-list">
+                                    <ul>
+                                        ${this.getRecommendations().map(rec => `<li>${rec}</li>`).join('')}
+                                    </ul>
+                                </div>
+                            </div>
+                        `;
+                    }
                 }
                 
                 const answersContainer = document.getElementById('adaptive-detailed-answers');
@@ -4513,7 +4684,8 @@
                     const scores = this.testResults.profile?.scores || [];
                     const bottom = [...scores].reverse().slice(0, 2);
                     if (bottom.length === 0) return ['Недостаточно данных: ответьте на большее число вопросов.'];
-                    return bottom.map(s => `Шкала «${s.key}»: ${s.score}% — можно усилить через практику и пробные активности`);
+                    const labelOf = (k) => (typeof ORIENTATION_DIM_LABELS === 'object' && ORIENTATION_DIM_LABELS && ORIENTATION_DIM_LABELS[k]) ? ORIENTATION_DIM_LABELS[k] : String(k);
+                    return bottom.map(s => `Шкала «${labelOf(s.key)}»: ${s.score}% — можно усилить через практику и пробные активности`);
                 }
 
                 const incorrectAnswers = this.testResults.answers.filter(a => a.isCorrect === false);
@@ -4547,7 +4719,8 @@
                     const scores = this.testResults.profile?.scores || [];
                     const top = scores.slice(0, 3);
                     if (top.length === 0) return ['Недостаточно данных: ответьте на большее число вопросов.'];
-                    return top.map(s => `Шкала «${s.key}»: ${s.score}% — выражена сильнее всего`);
+                    const labelOf = (k) => (typeof ORIENTATION_DIM_LABELS === 'object' && ORIENTATION_DIM_LABELS && ORIENTATION_DIM_LABELS[k]) ? ORIENTATION_DIM_LABELS[k] : String(k);
+                    return top.map(s => `Шкала «${labelOf(s.key)}»: ${s.score}% — выражена сильнее всего`);
                 }
 
                 // Для предметов: анализ по темам
@@ -4829,12 +5002,24 @@
         
         function shareResults() {
             if (testSystem && testSystem.testResults) {
-                const text = `🎯 Мой результат теста: ${testSystem.testResults.percentage}%!\n✅ Правильных: ${testSystem.testResults.score}/${testSystem.testResults.total}\n⏱️ Время: ${Math.floor(testSystem.testResults.timeSpent / 60)}:${(testSystem.testResults.timeSpent % 60).toString().padStart(2, '0')}\n\nПройди тест сам на медицинской профориентации!`;
+                const results = testSystem.testResults;
+                const time = `${Math.floor(results.timeSpent / 60)}:${(results.timeSpent % 60).toString().padStart(2, '0')}`;
+                const title = `Результаты теста - ${getTestName(results.subject)}`;
+
+                let text = `🎯 Мой результат: ${results.percentage}%\n⏱️ Время: ${time}`;
+                if (results.isOrientation) {
+                    const top = (results.profile?.scores || []).slice(0, 3);
+                    const labelOf = (k) => (typeof ORIENTATION_DIM_LABELS === 'object' && ORIENTATION_DIM_LABELS && ORIENTATION_DIM_LABELS[k]) ? ORIENTATION_DIM_LABELS[k] : String(k);
+                    if (top.length) text += `\n🧭 Топ-направления: ${top.map(t => `${labelOf(t.key)} (${t.score}%)`).join(', ')}`;
+                } else {
+                    text += `\n✅ Правильных: ${results.score}/${results.total}`;
+                }
+                text += `\n\nПройди тест на ${location.origin}!`;
                 
                 if (navigator.share) {
                     navigator.share({
-                        title: 'Результаты теста - Медицинская профориентация',
-                        text: text
+                        title,
+                        text
                     }).catch(console.error);
                 } else {
                     // Копируем в буфер обмена
@@ -4883,6 +5068,12 @@
                     <div class="score">${results.percentage}%</div>
                     
                     <div class="stats">
+                        ${results.isOrientation ? `
+                        <div class="stat">
+                            <div class="stat-value">🧭 ${results.percentage}%</div>
+                            <div class="stat-label">Профиль</div>
+                        </div>
+                        ` : `
                         <div class="stat">
                             <div class="stat-value">✅ ${results.score}</div>
                             <div class="stat-label">Правильных</div>
@@ -4891,6 +5082,7 @@
                             <div class="stat-value">❌ ${results.total - results.score}</div>
                             <div class="stat-label">Неправильных</div>
                         </div>
+                        `}
                         <div class="stat">
                             <div class="stat-value">⏱️ ${Math.floor(results.timeSpent / 60)}:${(results.timeSpent % 60).toString().padStart(2, '0')}</div>
                             <div class="stat-label">Время</div>
@@ -4899,7 +5091,7 @@
                     
                     <div class="section">
                         <h3>📊 Анализ</h3>
-                        <p>Уровень подготовки: ${results.percentage >= 90 ? 'Отлично' : results.percentage >= 75 ? 'Хорошо' : results.percentage >= 60 ? 'Удовлетворительно' : 'Требуется подготовка'}</p>
+                        <p>${results.isOrientation ? 'Профориентация: в этом тесте нет «правильных» ответов — важны ваши предпочтения.' : `Уровень подготовки: ${results.percentage >= 90 ? 'Отлично' : results.percentage >= 75 ? 'Хорошо' : results.percentage >= 60 ? 'Удовлетворительно' : 'Требуется подготовка'}`}</p>
                     </div>
                     
                     <div class="footer">
@@ -5250,40 +5442,6 @@
                 notification.style.animation = 'notification-out 0.5s ease forwards';
                 setTimeout(() => notification.remove(), 500);
             }, 3000);
-        }
-        
-        // ========================================
-        // УЛУЧШЕННАЯ ФУНКЦИЯ ПЕРЕКЛЮЧЕНИЯ СЕКЦИЙ
-        // ========================================
-        
-        const originalShowSection = typeof showSection === 'function' ? showSection : null;
-        
-        function showSection(sectionId) {
-            console.log('Switching to section:', sectionId);
-            
-            // Скрываем все секции
-            document.querySelectorAll('section').forEach(section => {
-                section.classList.remove('visible');
-                section.style.display = 'none';
-            });
-            
-            // Показываем выбранную секцию
-            const targetSection = document.getElementById(sectionId);
-            if (targetSection) {
-                targetSection.style.display = 'block';
-                targetSection.classList.add('visible');
-                
-                // Скролл к верху секции
-                window.scrollTo({ top: 0, behavior: 'smooth' });
-                
-                // Обновляем навигацию
-                document.querySelectorAll('nav a').forEach(link => {
-                    link.classList.remove('active');
-                    if (link.getAttribute('href') === '#' + sectionId) {
-                        link.classList.add('active');
-                    }
-                });
-            }
         }
         
         console.log('=== SCRIPT END ===');

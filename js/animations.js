@@ -17,6 +17,16 @@ function typewriterEffect(element, text, speed = 100) {
 
 // Анимация появления элементов
 function observeElements() {
+    try {
+        const reduceMotion = typeof window !== 'undefined' && window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+        const lowMem = typeof navigator !== 'undefined' && typeof navigator.deviceMemory === 'number' && navigator.deviceMemory > 0 && navigator.deviceMemory <= 2;
+        if (reduceMotion || lowMem) {
+            return;
+        }
+    } catch {
+        // ignore
+    }
+
     const observer = new IntersectionObserver((entries) => {
         entries.forEach(entry => {
             if (entry.isIntersecting) {
