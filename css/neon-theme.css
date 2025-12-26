@@ -18,6 +18,31 @@
     --border-glow: rgba(0, 245, 255, 0.3);
 }
 
+/* Performance mode: auto-enabled via <html class="perf-lite"> */
+.perf-lite *,
+.perf-lite *::before,
+.perf-lite *::after {
+    animation: none !important;
+    transition: none !important;
+}
+
+.perf-lite .glass-card,
+.perf-lite .neon-card,
+.perf-lite .card,
+.perf-lite .test-card,
+.perf-lite .stat-card,
+.perf-lite .profile-card {
+    backdrop-filter: none !important;
+    -webkit-backdrop-filter: none !important;
+    filter: none !important;
+}
+
+.perf-lite .neon-grid,
+.perf-lite .neon-particles,
+.perf-lite .neon-particle {
+    display: none !important;
+}
+
 /* ========================================
    ШРИФТЫ
    ======================================== */

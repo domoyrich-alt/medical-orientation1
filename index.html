@@ -5126,6 +5126,25 @@
         }
 
         // Анимация появления элементов при скролле
+        function isPerfLiteMode() {
+            try {
+                const reduceMotion = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+                const lowMem = typeof navigator !== 'undefined' && typeof navigator.deviceMemory === 'number' && navigator.deviceMemory > 0 && navigator.deviceMemory <= 2;
+                const lowCpu = typeof navigator !== 'undefined' && typeof navigator.hardwareConcurrency === 'number' && navigator.hardwareConcurrency > 0 && navigator.hardwareConcurrency <= 4;
+                const saveData = navigator && navigator.connection && navigator.connection.saveData === true;
+                return !!(reduceMotion || lowMem || lowCpu || saveData);
+            } catch {
+                return false;
+            }
+        }
+
+        const PERF_LITE = isPerfLiteMode();
+        try {
+            if (PERF_LITE) document.documentElement.classList.add('perf-lite');
+        } catch {
+            // ignore
+        }
+
         const observerOptions = {
             threshold: 0.1,
             rootMargin: '0px 0px -50px 0px'
@@ -5135,6 +5154,8 @@
             entries.forEach(entry => {
                 if (entry.isIntersecting) {
                     entry.target.classList.add('animate-fadeIn');
+                    // Сразу перестаём наблюдать, чтобы не грузить CPU/GPU
+                    try { observer.unobserve(entry.target); } catch { /* ignore */ }
                 }
             });
         }, observerOptions);
@@ -5142,11 +5163,15 @@
         // Наблюдаем за карточками
         document.addEventListener('DOMContentLoaded', () => {
             console.log('=== DOM CONTENT LOADED ===');
-            const cards = document.querySelectorAll('.card, .test-card, .specialty-card, .achievement');
-            console.log('Found cards:', cards.length);
-            cards.forEach(card => {
-                observer.observe(card);
-            });
+            if (!PERF_LITE) {
+                const cards = document.querySelectorAll('.card, .test-card, .specialty-card, .achievement');
+                console.log('Found cards:', cards.length);
+                cards.forEach(card => {
+                    observer.observe(card);
+                });
+            } else {
+                console.log('perf-lite enabled: skipping scroll reveal observer');
+            }
 
             // Мобильный фикс: при прокрутке пальцем по карточкам иногда срабатывает click,
             // из-за чего внезапно запускается тест и сетка «пропадает».
@@ -5226,8 +5251,10 @@
             // Инициализация цитаты дня
             initDailyQuote();
             
-            // Инициализация прогресс-бара скролла
-            initScrollProgress();
+            // Инициализация прогресс-бара скролла (дорого на слабых ПК)
+            if (!PERF_LITE) {
+                initScrollProgress();
+            }
             
             // Проверяем, что все нужные функции доступны
             console.log('Functions check:');
