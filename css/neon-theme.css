@@ -1,0 +1,19 @@
+/* Legacy neon theme (restored as optional). Not enabled by default. */
+
+:root {
+  --neon-cyan: #00f5ff;
+  --neon-pink: #ff00ff;
+  --neon-purple: #bf00ff;
+}
+
+/* Enable by adding: <html data-theme="neon"> */
+html[data-theme="neon"] body {
+  background: radial-gradient(ellipse at bottom, #1b2735 0%, #090a0f 100%);
+  color: rgba(255, 255, 255, 0.92);
+}
+
+html[data-theme="neon"] .card,
+html[data-theme="neon"] .test-card {
+  border: 1px solid rgba(0, 245, 255, 0.2);
+  box-shadow: 0 0 30px rgba(0, 245, 255, 0.12);
+}
